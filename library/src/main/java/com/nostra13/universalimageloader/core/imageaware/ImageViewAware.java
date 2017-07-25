@@ -73,12 +73,13 @@ public class ImageViewAware extends ViewAware {
 	@Override
 	public int getWidth() {
 		int width = super.getWidth();
-		//如果视图绘制没有完成或者wrap_content的情况
+		//1.视图绘制没有完成，并且没能通过View的getWidth获得宽度
+		//2.wrap_content的情况
 		if (width <= 0) {
 			ImageView imageView = (ImageView) viewRef.get();
 			if (imageView != null) {
-				//通过反射获取maxWidth属性
-				width = getImageViewFieldValue(imageView, "mMaxWidth"); // Check maxWidth parameter
+				//通过反射获取maxWidth属性，尝试用maxWidth来设置宽度
+				width = getImageViewFieldValue(imageView, "mMaxWidth");
 			}
 		}
 		//这里还是可能为0
@@ -123,7 +124,7 @@ public class ImageViewAware extends ViewAware {
 	@Override
 	protected void setImageDrawableInto(Drawable drawable, View view) {
 		((ImageView) view).setImageDrawable(drawable);
-		if (drawable instanceof AnimationDrawable) {
+		if (drawable instanceof AnimationDrawable) {//如果是AnimationDrawable，比方说一个animation-list，尝试开启动画
 			((AnimationDrawable)drawable).start();
 		}
 	}

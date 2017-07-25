@@ -119,34 +119,44 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 	public void run() {
 		//ImageLoaderEngine是否被暂停，如果暂停，则当前任务直接结束
 		//不过还是可以从内存缓存中获取图片，这个在列表页滑动加载还是很有意义的
+		//因为线程池默认是fixed类型的线程池，那么pause的时候最多会导致核心线程数的等待
+		//后续任务进入都会进行线程池的队列中等待执行
 		if (waitIfPaused()) return;
 		//如果配置了当前任务需要延时读取，则当前线程会沉睡指定毫秒后唤醒，如果任务有效则继续执行
 		if (delayIfNeed()) return;
 		//这个是当前链接对应的线程锁
+		//一个连接对应有一个ReentrantLock
 		ReentrantLock loadFromUriLock = imageLoadingInfo.loadFromUriLock;
 		L.d(LOG_START_DISPLAY_IMAGE_TASK, memoryCacheKey);
 		if (loadFromUriLock.isLocked()) {
 			L.d(LOG_WAITING_FOR_IMAGE_LOADED, memoryCacheKey);
 		}
-		//如果当前链接已经发起过请求，则该链接的请求将会加锁，之后如果有重复的请求发生，也将会被挂起，知道锁释放
+		//假设此时对于同一个链接不同的载体的不同的线程中的任务
+		//如果已经发起过一个请求，则该链接的请求将会加锁，之后如果有重复的请求发生，会一直等待直到锁释放
+		//同一个链接的请求同一时刻只能有一个
+		//等第一个请求完成之后，可能在硬盘缓存或者内存缓存中存在缓存
+		//从而后续的操作就可以从缓存中获取图片再进行操作
 		loadFromUriLock.lock();
 		Bitmap bmp;
 		try {
-			//检查任务的有效性，如果无效会进行任务取消的回调
+			//对于同一个链接的任务，有的任务在等待后重新执行，此时可能过了一段时间
+			//需要检查任务的有效性，如果无效直接进入catch
 			checkTaskNotActual();
 			//再次尝试从内存缓存中获取
 			//主要场景就是当多个相同链接的请求发生的时候，只有一个任务正常执行，其余任务阻塞
 			//那么当第一个任务完成之后，下一个任务唤醒之后，此时可能因为第一个任务的成功而导致内存缓存中有值
 			//此时从内存缓存中获取即可，不必要再次进行多余操作
 			bmp = configuration.memoryCache.get(memoryCacheKey);
-			if (bmp == null || bmp.isRecycled()) {//没有击中内存缓存
+			if (bmp == null || bmp.isRecycled()) {//内存缓存中还是没有数据
 				//从硬盘或者网络上尝试获取Bitmap
 				bmp = tryLoadBitmap();
 				if (bmp == null) return; // listener callback already was fired
-
+				//bitmap在缓存到内存缓存中之前可能要进行preProcessor操作
+				//在这之前先检查任务的有效性
 				checkTaskNotActual();
 				checkTaskInterrupted();
-				//注意这之后的操作和硬盘缓存并没有关系
+				//后续操作和硬盘缓存已经没有关系
+
 				//在进行内存缓存前可以对Bitmap进行操作
 				//这个对应于从内存缓存中获取bitmap之后的postProcessor
 				if (options.shouldPreProcess()) {
@@ -156,7 +166,7 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 						L.e(ERROR_PRE_PROCESSOR_NULL, memoryCacheKey);
 					}
 				}
-				//进行内存缓存必须在DisplayOptions中配置
+				//当前允许将bitmap存入内存缓存中
 				if (bmp != null && options.isCacheInMemory()) {
 					L.d(LOG_CACHE_IMAGE_IN_MEMORY, memoryCacheKey);
 					//进行内存缓存
@@ -166,7 +176,7 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 				loadedFrom = LoadedFrom.MEMORY_CACHE;
 				L.d(LOG_GET_IMAGE_FROM_MEMORY_CACHE_AFTER_WAITING, memoryCacheKey);
 			}
-
+			//这里的bitmap可以看做从内存缓存中获取的，
 			if (bmp != null && options.shouldPostProcess()) {
 				L.d(LOG_POSTPROCESS_IMAGE, memoryCacheKey);
 				bmp = options.getPostProcessor().process(bmp);
@@ -174,30 +184,33 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 					L.e(ERROR_POST_PROCESSOR_NULL, memoryCacheKey);
 				}
 			}
+			//在进行展示任务之前，检查任务的有效性
 			checkTaskNotActual();
 			checkTaskInterrupted();
 		} catch (TaskCancelledException e) {
-			fireCancelEvent();
+			fireCancelEvent();//这个异常仅对应与任务取消异常，会回调onLoadingCancelled
 			return;
-		} finally {
+		} finally {//注意ReentrantLock的基础，必须在try/catch/finally模块中，否则可能出现锁无法释放的情况
 			loadFromUriLock.unlock();
 		}
-
+		//进行展示任务
 		DisplayBitmapTask displayBitmapTask = new DisplayBitmapTask(bmp, imageLoadingInfo, engine, loadedFrom);
 		runTask(displayBitmapTask, syncLoading, handler, engine);
 	}
 
-	/** @return <b>true</b> - if task should be interrupted; <b>false</b> - otherwise */
+	/**
+	 * 如果有必要，wait当前线程
+	 * */
 	private boolean waitIfPaused() {
 		AtomicBoolean pause = engine.getPause();
 		if (pause.get()) {//获取当前线程池是否暂停的标志
 			//如果当前线程池被暂停
-			synchronized (engine.getPauseLock()) {
-				if (pause.get()) {
+			synchronized (engine.getPauseLock()) {//暂停锁
+				if (pause.get()) {//因为锁的原因，可能会导致阻塞了一些时间，这里需要进行二次检查
 					L.d(LOG_WAITING_FOR_RESUME, memoryCacheKey);
 					try {
-						//如果当前线程池需要暂停，释放engine.getPauseLock()的锁，并且当前线程沉睡
-						//如果ImageLoaderEngine中重新设置启动，则会唤醒所有wait的线程
+						//如果当前线程池需要暂停，释放engine.getPauseLock()的锁，并且当前线程等待执行
+						//ImageLoaderEngine在resume中通过engine.getPauseLock().notifyAll即可唤醒当前所有在等待中的线程
 						engine.getPauseLock().wait();
 					} catch (InterruptedException e) {
 						L.e(LOG_TASK_INTERRUPTED, memoryCacheKey);
@@ -207,12 +220,13 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 				}
 			}
 		}
-		//当任务被唤醒时，需要重新检查一下当前任务的有效性
-		//这个一般因为AbsListView的复用非常频繁，所以会使cacheKey和ImageAware对不上从而取消之前唤醒的请求
+		//当任务被唤醒时，因为可能隔了一段时间，重新检查一下当前任务的有效性
 		return isTaskNotActual();
 	}
 
-	/** @return <b>true</b> - if task should be interrupted; <b>false</b> - otherwise */
+	/**
+	 * 如果需要，尝试延时当前线程的执行
+	 * */
 	private boolean delayIfNeed() {
 		//如果在DisplayOption中配置了延时读取的毫秒
 		if (options.shouldDelayBeforeLoading()) {
@@ -223,7 +237,7 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 				L.e(LOG_TASK_INTERRUPTED, memoryCacheKey);
 				return true;
 			}
-			//唤醒后，如果当前任务有效，则继续开始加载的任务
+			//唤醒后，因为过了一段时间，需要重新检查当前任务的有效性
 			return isTaskNotActual();
 		}
 		return false;
@@ -243,12 +257,13 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 			if (imageFile != null && imageFile.exists() && imageFile.length() > 0) {//击中硬盘缓存
 				L.d(LOG_LOAD_IMAGE_FROM_DISK_CACHE, memoryCacheKey);
 				loadedFrom = LoadedFrom.DISC_CACHE;
-				//检查任务的有效性，因为之后获取bitmap相对来说有一定的开销，没有必要进行的任务最好还是取消
+				//即将进行图片的压缩等处理，先检查任务的有效性
 				checkTaskNotActual();
 				//根据uri解析bitmap，这个Scheme中定义了ImageLoader可以识别的前缀，具体看Scheme类
 				bitmap = decodeImage(Scheme.FILE.wrap(imageFile.getAbsolutePath()));
 			}
-			if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {//未击中硬盘缓存
+			//未击中硬盘缓存
+			if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) {
 				L.d(LOG_LOAD_IMAGE_FROM_NETWORK, memoryCacheKey);
 				loadedFrom = LoadedFrom.NETWORK;
 
@@ -256,14 +271,15 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 				//DisplayOptions中设置允许缓存在硬盘中的话，尝试从网络上加载图片并且缓存在硬盘中
 				if (options.isCacheOnDisk() && tryCacheImageOnDisk()) {
 					//尝试从硬盘中获取刚刚通过网络等方式获取的图片
-					//这里的图片已经经过压缩处理
+					//这里除非在ImageLoaderConfiguration中指定硬盘缓存中的最大宽高
+					//否则一般来说就是原图
 					imageFile = configuration.diskCache.get(uri);
 					if (imageFile != null) {
 						//获取成功后需要添加file的Scheme
 						imageUriForDecoding = Scheme.FILE.wrap(imageFile.getAbsolutePath());
 					}
 				}
-				//刚刚可能进行了耗时操作，所以此时需要检查当前任务的有效性
+				//准备进行拉伸压缩等操作，先检查任务的有效性
 				checkTaskNotActual();
 				//如果允许硬盘缓存的话，再次解析文件，压缩等操作（之前进行过压缩，所以这里基本上就是过一遍判断）
 				//否则就是从网络上获取流，然后压缩等操作，不会进行硬盘缓存
@@ -273,6 +289,8 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 					fireFailEvent(FailType.DECODING_ERROR, null);
 				}
 			}
+			//普通的异常意味着获取图片失败，会设置fail时候设置的图片，并且回调onLoadingFailed
+			//有一个异常比较特殊，任务取消异常，这个会在上一级catch中捕捉
 		} catch (IllegalStateException e) {
 			fireFailEvent(FailType.NETWORK_DENIED, null);
 		} catch (TaskCancelledException e) {
@@ -292,9 +310,8 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 
 	/**
 	 * 根据uri解析图片（uri可能是http、drawable、content等，具体看Scheme类）
-	 * @param imageUri
-	 * @return
-	 * @throws IOException
+	 * @param imageUri 当前要处理的图片URI
+	 * @return 压缩拉伸等处理后的Bitmap
      */
 	private Bitmap decodeImage(String imageUri) throws IOException {
 		//获取压缩类型CROP或FIT_INSIDE
@@ -306,7 +323,9 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 		return decoder.decode(decodingInfo);
 	}
 
-	/** @return <b>true</b> - if image was downloaded successfully; <b>false</b> - otherwise */
+	/**
+	 * 尝试将图片缓存到硬盘中
+	 * */
 	private boolean tryCacheImageOnDisk() throws TaskCancelledException {
 		L.d(LOG_CACHE_IMAGE_ON_DISK, memoryCacheKey);
 
@@ -323,6 +342,7 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 					resizeAndSaveImage(width, height); // TODO : process boolean result
 				}
 			}
+			//默认硬盘缓存中是原图
 		} catch (IOException e) {
 			L.e(e);
 			loaded = false;
@@ -331,16 +351,17 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 	}
 
 	/**
-	 * 从网络上获取图片的输入流，并且保存进硬盘当中
+	 * 从网络（或者文件之类）上获取图片的输入流，并且保存进硬盘当中
 	 * @return true表示硬盘缓存成功
      */
 	private boolean downloadImage() throws IOException {
+		//从指定来源获取图片的输入流
 		InputStream is = getDownloader().getStream(uri, options.getExtraForDownloader());
 		if (is == null) {
 			L.e(ERROR_NO_IMAGE_STREAM, memoryCacheKey);
 			return false;
 		} else {
-			try {
+			try {//将图片缓存到硬盘中，这里明显是原图
 				return configuration.diskCache.save(uri, is, this);
 			} finally {
 				IoUtils.closeSilently(is);
@@ -348,21 +369,25 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 		}
 	}
 
-	/** Decodes image file into Bitmap, resize it and save it back
-	 * 解析硬盘缓存的图片，并且按照设置的最大宽高重新压缩并缓存
+	/**
+	 * 将硬盘缓存中的数据重新设置宽高，然后覆盖
+	 * 用于设置硬盘缓存中的最大宽高
 	 * */
 	private boolean resizeAndSaveImage(int maxWidth, int maxHeight) throws IOException {
-		// Decode image file, compress and re-save it
 		boolean saved = false;
 
 		File targetFile = configuration.diskCache.get(uri);
+		//从网络或者其它来源加载图片输入流成功之后，会先将流存入硬盘缓存中
+		//这里会尝试再次取出
 		if (targetFile != null && targetFile.exists()) {
 			ImageSize targetImageSize = new ImageSize(maxWidth, maxHeight);
+			//指定IN_SAMPLE_INT的时候，只会进行压缩处理，不会拉伸
 			DisplayImageOptions specialOptions = new DisplayImageOptions.Builder().cloneFrom(options)
 					.imageScaleType(ImageScaleType.IN_SAMPLE_INT).build();
 			ImageDecodingInfo decodingInfo = new ImageDecodingInfo(memoryCacheKey,
 					Scheme.FILE.wrap(targetFile.getAbsolutePath()), uri, targetImageSize, ViewScaleType.FIT_INSIDE,
 					getDownloader(), specialOptions);
+			//根据给定的新的宽高重新拉伸压缩等操作
 			Bitmap bmp = decoder.decode(decodingInfo);
 			if (bmp != null && configuration.processorForDiskCache != null) {
 				L.d(LOG_PROCESS_IMAGE_BEFORE_CACHE_ON_DISK, memoryCacheKey);
@@ -371,7 +396,7 @@ final class LoadAndDisplayImageTask implements Runnable, IoUtils.CopyListener {
 					L.e(ERROR_PROCESSOR_FOR_DISK_CACHE_NULL, memoryCacheKey);
 				}
 			}
-			if (bmp != null) {
+			if (bmp != null) {//将处理后的bitmap重新写入硬盘缓存中进行覆盖
 				saved = configuration.diskCache.save(uri, bmp);
 				bmp.recycle();
 			}

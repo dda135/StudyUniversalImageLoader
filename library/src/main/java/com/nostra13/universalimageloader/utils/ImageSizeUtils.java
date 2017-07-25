@@ -60,6 +60,42 @@ public final class ImageSizeUtils {
 		return new ImageSize(width, height);
 	}
 
+	private static int considerMaxTextureSize(int srcWidth, int srcHeight, int scale, boolean powerOf2) {
+		final int maxWidth = maxBitmapSize.getWidth();
+		final int maxHeight = maxBitmapSize.getHeight();
+		while ((srcWidth / scale) > maxWidth || (srcHeight / scale) > maxHeight) {
+			if (powerOf2) {
+				scale *= 2;
+			} else {
+				scale++;
+			}
+		}
+		return scale;
+	}
+
+	/**
+	 * Computes minimal sample size for downscaling image so result image size won't exceed max acceptable OpenGL
+	 * texture size.<br />
+	 * We can't create Bitmap in memory with size exceed max texture size (usually this is 2048x2048) so this method
+	 * calculate minimal sample size which should be applied to image to fit into these limits.
+	 *
+	 * @param srcSize Original image size
+	 * @return Minimal sample size
+	 */
+	public static int computeMinImageSampleSize(ImageSize srcSize) {
+		final int srcWidth = srcSize.getWidth();
+		final int srcHeight = srcSize.getHeight();
+		//注释中说明这个值一般都是2048x2048
+		final int targetWidth = maxBitmapSize.getWidth();
+		final int targetHeight = maxBitmapSize.getHeight();
+		//基本可以认为这个值为1（向上取整）
+		//只有图片大于2048x2048的情况下才压缩
+		final int widthScale = (int) Math.ceil((float) srcWidth / targetWidth);
+		final int heightScale = (int) Math.ceil((float) srcHeight / targetHeight);
+
+		return Math.max(widthScale, heightScale); // max
+	}
+
 	/**
 	 * Computes sample size for downscaling image size (<b>srcSize</b>) to view size (<b>targetSize</b>). This sample
 	 * size is used during
@@ -97,85 +133,49 @@ public final class ImageSizeUtils {
 		final int targetHeight = targetSize.getHeight();
 
 		int scale = 1;
-		//powerOf2Scale:
-		// FIT系列：true的话一般可以理解为载体最后可能会拉伸压缩后的bitmap，false可能压缩压缩后的bitmap
-		// CROP系列：和FIT系列刚好相反
-		//载体的参数
+		//inSampleSize是用于压缩的，一般来说2的话就意味着宽和高都变成原来的一般，从像素和内存的角度就是变成了1/4
 		switch (viewScaleType) {
 			case FIT_INSIDE://对应于FIT_XY系列
-				if (powerOf2Scale) {//2乘法
+				if (powerOf2Scale) {//ImageScaleType.IN_SAMPLE_POWER_OF_2
 					final int halfWidth = srcWidth / 2;
 					final int halfHeight = srcHeight / 2;
 					//循环2除，直到bitmap的宽高都小于等于载体的宽高
 					//FIT系列在设置的时候会自动拉伸，所以说FIT_XY会有拉伸
-					//注意到这里如果视图没有绘制完成或者wrap_content，并且没有知道maxHeight的时候调用
-					//target为屏幕，图片是不会进行压缩
-					while ((halfWidth / scale) > targetWidth || (halfHeight / scale) > targetHeight) { // ||
+					//注意到这里如果视图没有绘制完成或者wrap_content，并且没有指定maxHeight/Width的时候调用
+					//此时target默认为屏幕，图片基本可以认为不会进行压缩
+					while ((halfWidth / scale) > targetWidth || (halfHeight / scale) > targetHeight) {
 						scale *= 2;
 					}
-				} else {
-					//压缩后的图片可能会比载体大，从而进行的是压缩
-					scale = Math.max(srcWidth / targetWidth, srcHeight / targetHeight); // max
+				} else {//IN_SAMPLE_INT、EXACTLY、EXACTLY_STRETCHED
+					//这种方式不一定会得到2的倍数，但是BitmapFactory的inSampleSize只支持2的倍数
+					//其中BitmapFactory会自动向下取，比方说这里取7，但是实际上用的是4，会比预期要大
+					scale = Math.max(srcWidth / targetWidth, srcHeight / targetHeight);
 				}
 				break;
 			case CROP://对应于CROP系列
 				if (powerOf2Scale) {
 					final int halfWidth = srcWidth / 2;
 					final int halfHeight = srcHeight / 2;
-					//取大，可能会压缩压缩后的bitmap
-					while ((halfWidth / scale) > targetWidth && (halfHeight / scale) > targetHeight) { // &&
+					//只要有宽/高压缩到target的宽/高即可，就是说可能存在另一边大于target的情况
+					while ((halfWidth / scale) > targetWidth && (halfHeight / scale) > targetHeight) {
 						scale *= 2;
 					}
 				} else {
-					//取消
-					scale = Math.min(srcWidth / targetWidth, srcHeight / targetHeight); // min
+					//这种方式不一定会得到2的倍数，但是BitmapFactory的inSampleSize只支持2的倍数
+					//其中BitmapFactory会自动向下取，比方说这里取7，但是实际上用的是4
+					//这里预期是宽/高有一边到达target的宽/高即可，这样会导致可能两边都比target大
+					scale = Math.min(srcWidth / targetWidth, srcHeight / targetHeight);
 				}
 				break;
 		}
 
-		if (scale < 1) {
+		if (scale < 1) {//注意这里是没有拉伸操作的，当然inSampleSize也不支持<1，默认也会使用1
 			scale = 1;
 		}
 		//不允许大于2048x2048
 		scale = considerMaxTextureSize(srcWidth, srcHeight, scale, powerOf2Scale);
 		//如果不采用2除的方式，inSampleSize默认会取1,2,4,8...，从而向下取整
 		return scale;
-	}
-
-	private static int considerMaxTextureSize(int srcWidth, int srcHeight, int scale, boolean powerOf2) {
-		final int maxWidth = maxBitmapSize.getWidth();
-		final int maxHeight = maxBitmapSize.getHeight();
-		while ((srcWidth / scale) > maxWidth || (srcHeight / scale) > maxHeight) {
-			if (powerOf2) {
-				scale *= 2;
-			} else {
-				scale++;
-			}
-		}
-		return scale;
-	}
-
-	/**
-	 * Computes minimal sample size for downscaling image so result image size won't exceed max acceptable OpenGL
-	 * texture size.<br />
-	 * We can't create Bitmap in memory with size exceed max texture size (usually this is 2048x2048) so this method
-	 * calculate minimal sample size which should be applied to image to fit into these limits.
-	 *
-	 * @param srcSize Original image size
-	 * @return Minimal sample size
-	 */
-	public static int computeMinImageSampleSize(ImageSize srcSize) {
-		final int srcWidth = srcSize.getWidth();
-		final int srcHeight = srcSize.getHeight();
-		//注释中说明这个值一般都是2048x2048
-		final int targetWidth = maxBitmapSize.getWidth();
-		final int targetHeight = maxBitmapSize.getHeight();
-		//基本可以认为这个值为1（向上取整）
-		//只有图片大于2048x2048的情况下才压缩
-		final int widthScale = (int) Math.ceil((float) srcWidth / targetWidth);
-		final int heightScale = (int) Math.ceil((float) srcHeight / targetHeight);
-
-		return Math.max(widthScale, heightScale); // max
 	}
 
 	/**
@@ -214,8 +214,9 @@ public final class ImageSizeUtils {
 
 		final int destWidth;
 		final int destHeight;
-
-		if ((viewScaleType == ViewScaleType.FIT_INSIDE && widthScale >= heightScale) || (viewScaleType == ViewScaleType.CROP && widthScale < heightScale)) {
+		//将宽/高其中的靠近载体的一边变成target的大小，另一边按照比例拉伸或者压缩
+		if ((viewScaleType == ViewScaleType.FIT_INSIDE && widthScale >= heightScale) ||
+				(viewScaleType == ViewScaleType.CROP && widthScale < heightScale)) {
 			destWidth = targetWidth;
 			destHeight = (int) (srcHeight / widthScale);
 		} else {
@@ -224,7 +225,13 @@ public final class ImageSizeUtils {
 		}
 
 		float scale = 1;
-		//ImageScaleType.EXACTLY_STRETCHED会要求将bitmap
+		//EXACTLY的时候只会进行压缩
+		//FIT系列会按照最大边进行压缩，那么压缩完之后bitmap的宽高必然小于载体
+		//CROP系列会按照最小边进行压缩，那么压缩完是保证至少有一边满足载体要求
+		//EXACTLY_STRETCHED会进行压缩或者拉伸，压缩的表现同EXACTLY
+		//FIT系列会进行拉伸，知道有一边满足载体要求
+		//CROP系列在压缩的时候，基本上会保证bitmap大于等于载体，拉伸基本上没啥可能
+		//一般来说提供相同比例的图片，那么就是宽高都是完全匹配的，这两种模式没有任何区别
 		if ((!stretch && destWidth < srcWidth && destHeight < srcHeight) || (stretch && destWidth != srcWidth && destHeight != srcHeight)) {
 			scale = (float) destWidth / srcWidth;
 		}

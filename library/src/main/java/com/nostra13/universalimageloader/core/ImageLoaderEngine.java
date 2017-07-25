@@ -44,17 +44,20 @@ class ImageLoaderEngine {
 	private Executor taskExecutor;
 	private Executor taskExecutorForCachedImages;
 	//Executors.newCachedThreadPool()，在这里的实现是分配线程
+	//内部主要是处理从硬盘中获取图片以及后续操作
 	//当有任务进入的时候，立刻新建或者复用线程
 	private Executor taskDistributor;
 
 	private final Map<Integer, String> cacheKeysForImageAwares = Collections
 			.synchronizedMap(new HashMap<Integer, String>());
 	private final Map<String, ReentrantLock> uriLocks = new WeakHashMap<String, ReentrantLock>();
-
+	//暂停标记，如果当前标记为true，则后续所有任务的线程都会处于wait中
 	private final AtomicBoolean paused = new AtomicBoolean(false);
+	//标记当前是否拒绝从网络上加载图片
 	private final AtomicBoolean networkDenied = new AtomicBoolean(false);
+	//标记当前是否处于弱网状态
 	private final AtomicBoolean slowNetwork = new AtomicBoolean(false);
-
+	//暂停锁，当ImageLoader暂停的时候，新的任务都会在当前锁中wait
 	private final Object pauseLock = new Object();
 
 	ImageLoaderEngine(ImageLoaderConfiguration configuration) {
@@ -68,19 +71,40 @@ class ImageLoaderEngine {
 
 	/** Submits task to execution pool */
 	void submit(final LoadAndDisplayImageTask task) {
+		//执行到这里，意味着当前请求没能击中内存缓存
+		//该线程池的主要工作就是从硬盘缓存中获取图片
 		taskDistributor.execute(new Runnable() {
 			@Override
 			public void run() {
+				//从硬盘缓存中获取对应的图片缓存文件
 				File image = configuration.diskCache.get(task.getLoadingUri());
 				boolean isImageCachedOnDisk = image != null && image.exists();
-				initExecutorsIfNeed();
-				if (isImageCachedOnDisk) {
+				initExecutorsIfNeed();//如果ImageLoader之前进行了stop，那么这里要尝试使用可用的线程池
+				if (isImageCachedOnDisk) {//当前命中硬盘缓存，通过专门处理缓存的线程池执行任务
 					taskExecutorForCachedImages.execute(task);
-				} else {
+				} else {//当前没有命中硬盘缓存，通过专门处理从流（网络等来源）中获取图片的线程池执行任务
 					taskExecutor.execute(task);
 				}
 			}
 		});
+	}
+
+	/**
+	 * 暂停后续的图片加载任务，当前已经进行中的任务无法暂停
+	 * 只能通过resume恢复暂停后添加的新任务（重复的任务会不断的覆盖）
+	 */
+	void pause() {
+		paused.set(true);//实际上就是标记一下当前ImageLoaderEngine暂停
+	}
+
+	/**
+	 * 继续图片的加载任务，并且会尝试唤醒之前暂停的任务
+	 */
+	void resume() {
+		paused.set(false);//标记当前ImageLoaderEngine可以运行
+		synchronized (pauseLock) {
+			pauseLock.notifyAll();//尝试唤醒之前因为pause而处于wait状态的加载线程，从而开始之前的任务
+		}
 	}
 
 	/**
@@ -159,22 +183,6 @@ class ImageLoaderEngine {
 	 */
 	void handleSlowNetwork(boolean handleSlowNetwork) {
 		slowNetwork.set(handleSlowNetwork);
-	}
-
-	/**
-	 * Pauses engine. All new "load&display" tasks won't be executed until ImageLoader is {@link #resume() resumed}.<br
-	 * /> Already running tasks are not paused.
-	 */
-	void pause() {
-		paused.set(true);
-	}
-
-	/** Resumes engine work. Paused "load&display" tasks will continue its work. */
-	void resume() {
-		paused.set(false);
-		synchronized (pauseLock) {
-			pauseLock.notifyAll();
-		}
 	}
 
 	/**

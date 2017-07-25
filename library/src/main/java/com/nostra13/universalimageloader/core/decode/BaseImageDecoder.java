@@ -81,9 +81,10 @@ public class BaseImageDecoder implements ImageDecoder {
 		try {
 			//根据Bitmap和图像的方向获得图片大小等信息
 			imageInfo = defineImageSizeAndRotation(imageStream, decodingInfo);
-			//重置/重新获取输入流
+			//BitmapFactory是不支持多次使用同一个流的，所以要么重置，要么重新来获取图片的输入流
+			//默认的网络使用的是BufferedInputStream，是可以重置流的，不需要重新发起网络请求
 			imageStream = resetStream(imageStream, decodingInfo);
-			//根据当前获得的bitmap的宽高和载体的宽高，计算并设置Options的压缩比例
+			//根据当前获得的bitmap的宽高和载体的宽高，计算并设置Options的压缩比例，主要是inSampleSize
 			Options decodingOptions = prepareDecodingOptions(imageInfo.imageSize, decodingInfo);
 			//解析流获得bitmap
 			decodedBitmap = BitmapFactory.decodeStream(imageStream, null, decodingOptions);
@@ -100,24 +101,17 @@ public class BaseImageDecoder implements ImageDecoder {
 		return decodedBitmap;
 	}
 
-	/**
-	 * 获取图片流，这种形式从文件或者网络获取都有可能
-     */
-	protected InputStream getImageStream(ImageDecodingInfo decodingInfo) throws IOException {
-		return decodingInfo.getDownloader().getStream(decodingInfo.getImageUri(), decodingInfo.getExtraForDownloader());
-	}
-
 	protected ImageFileInfo defineImageSizeAndRotation(InputStream imageStream, ImageDecodingInfo decodingInfo)
 			throws IOException {
 		Options options = new Options();
-		//当前不会加载入内存，只会获得相关参数
+		//当前不会将bitmap的数据加载入内存，只会获得相关参数，避免造成内存过大的占用
 		options.inJustDecodeBounds = true;
-		//解析当前流，并且将数据记录在Options中
+		//解析当前流，并且将数据记录在Options中，主要是为了记录原图的宽高
 		BitmapFactory.decodeStream(imageStream, null, options);
 
 		ExifInfo exif;
 		String imageUri = decodingInfo.getImageUri();
-		//默认一般的图片方向都是不考虑的
+		//默认一般的图片方向都是不考虑的，但是比方说有的自定义使用照相API的时候拍的图片可能要考虑
 		if (decodingInfo.shouldConsiderExifParams() && canDefineExifParams(imageUri, options.outMimeType)) {
 			exif = defineExifOrientation(imageUri);
 		} else {
@@ -134,6 +128,16 @@ public class BaseImageDecoder implements ImageDecoder {
 		return "image/jpeg".equalsIgnoreCase(mimeType) && (Scheme.ofUri(imageUri) == Scheme.FILE);
 	}
 
+	/**
+	 * 获取图片流，这种形式从文件或者网络获取都有可能
+	 */
+	protected InputStream getImageStream(ImageDecodingInfo decodingInfo) throws IOException {
+		return decodingInfo.getDownloader().getStream(decodingInfo.getImageUri(), decodingInfo.getExtraForDownloader());
+	}
+
+	/**
+	 * 判断当前图片的方向决定旋转的角度之类
+	 */
 	protected ExifInfo defineExifOrientation(String imageUri) {
 		int rotation = 0;
 		boolean flip = false;
@@ -221,10 +225,9 @@ public class BaseImageDecoder implements ImageDecoder {
 	protected Bitmap considerExactScaleAndOrientatiton(Bitmap subsampledBitmap, ImageDecodingInfo decodingInfo,
 			int rotation, boolean flipHorizontal) {
 		Matrix m = new Matrix();
-		// Scale to exact size if need
 		ImageScaleType scaleType = decodingInfo.getImageScaleType();
 		//可以在ImageLoaderConfiguration或DisplayOptions中配置ImageScaleType
-		//如果为EXACTLY系列
+		//如果为EXACTLY系列，要考虑拉伸或者压缩到target大小
 		if (scaleType == ImageScaleType.EXACTLY || scaleType == ImageScaleType.EXACTLY_STRETCHED) {
 			ImageSize srcSize = new ImageSize(subsampledBitmap.getWidth(), subsampledBitmap.getHeight(), rotation);
 			float scale = ImageSizeUtils.computeImageScale(srcSize, decodingInfo.getTargetSize(), decodingInfo
@@ -237,23 +240,23 @@ public class BaseImageDecoder implements ImageDecoder {
 				}
 			}
 		}
-		// Flip bitmap if need
-		if (flipHorizontal) {
+
+		if (flipHorizontal) {//实际上就是每一个x坐标取-，看上去就是横向的镜像对称
 			m.postScale(-1, 1);
 
 			if (loggingEnabled) L.d(LOG_FLIP_IMAGE, decodingInfo.getImageKey());
 		}
-		// Rotate bitmap if need
-		if (rotation != 0) {
+
+		if (rotation != 0) {//是否要旋转bitmap
 			m.postRotate(rotation);
 
 			if (loggingEnabled) L.d(LOG_ROTATE_IMAGE, rotation, decodingInfo.getImageKey());
 		}
-
+		//处理拉伸/压缩，旋转和颠倒，这个过程相对会耗费一些内存
 		Bitmap finalBitmap = Bitmap.createBitmap(subsampledBitmap, 0, 0, subsampledBitmap.getWidth(), subsampledBitmap
 				.getHeight(), m, true);
 		if (finalBitmap != subsampledBitmap) {
-			subsampledBitmap.recycle();
+			subsampledBitmap.recycle();//手动回收旧的bitmap，已经没用了
 		}
 		return finalBitmap;
 	}

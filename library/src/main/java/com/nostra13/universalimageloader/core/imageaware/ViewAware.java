@@ -37,8 +37,8 @@ public abstract class ViewAware implements ImageAware {
 	public static final String WARN_CANT_SET_DRAWABLE = "Can't set a drawable into view. You should call ImageLoader on UI thread for it.";
 	public static final String WARN_CANT_SET_BITMAP = "Can't set a bitmap into view. You should call ImageLoader on UI thread for it.";
 
-	protected Reference<View> viewRef;
-	protected boolean checkActualViewSize;
+	protected Reference<View> viewRef;//这里实际上是一个弱应用，这样在View被GC之后可以释放对应的Activity，不会造成内存泄漏问题
+	protected boolean checkActualViewSize;//这个默认一般为true，会尝试通过getWidth/Height的方式获取大小
 
 	/**
 	 * Constructor. <br />
@@ -88,12 +88,11 @@ public abstract class ViewAware implements ImageAware {
 		if (view != null) {
 			final ViewGroup.LayoutParams params = view.getLayoutParams();
 			int width = 0;
-			//默认都是true，当不是wrap_content的情况获取视图的宽度
-			//这里要注意，如果视图第一次layout没有完成的话这个肯定是0咯
+			//checkActualViewSize默认为true，当不是wrap_content的情况获取视图的宽度
 			if (checkActualViewSize && params != null && params.width != ViewGroup.LayoutParams.WRAP_CONTENT) {
-				width = view.getWidth(); // Get actual image width
+				width = view.getWidth(); //这里要注意，如果视图第一次layout没有完成的话这个肯定是0咯，尽量在视图绘制完成后使用合适一点
 			}
-			if (width <= 0 && params != null) width = params.width; // Get layout width parameter
+			if (width <= 0 && params != null) width = params.width;
 			//这里当视图绘制没有完成和wrap_content的时候可能为0或-2
 			return width;
 		}
@@ -136,21 +135,23 @@ public abstract class ViewAware implements ImageAware {
 
 	@Override
 	public boolean isCollected() {
-		return viewRef.get() == null;
+		return viewRef.get() == null;//通过弱应用持有的对象，如果没有其它引用的情况下，在系统GC的时候也会被回收
 	}
 
 	@Override
 	public int getId() {
-		View view = viewRef.get();
+		View view = viewRef.get();//这里通过view的hashCode返回唯一标识符，可以应对视图复用的情况
 		return view == null ? super.hashCode() : view.hashCode();
 	}
 
 	@Override
 	public boolean setImageDrawable(Drawable drawable) {
+		//当前方法可能在UI线程或者子线程中回调
+		//此处只允许在UI线程中设置bitmap
 		if (Looper.myLooper() == Looper.getMainLooper()) {
 			View view = viewRef.get();
-			if (view != null) {
-				setImageDrawableInto(drawable, view);
+			if (view != null) {//检查view是否被回收
+				setImageDrawableInto(drawable, view);//当前没有被回收
 				return true;
 			}
 		} else {
@@ -161,10 +162,12 @@ public abstract class ViewAware implements ImageAware {
 
 	@Override
 	public boolean setImageBitmap(Bitmap bitmap) {
+		//当前方法可能在UI线程或者子线程中回调
+		//此处只允许在UI线程中设置bitmap
 		if (Looper.myLooper() == Looper.getMainLooper()) {
 			View view = viewRef.get();
-			if (view != null) {
-				setImageBitmapInto(bitmap, view);
+			if (view != null) {//检查view是否被回收
+				setImageBitmapInto(bitmap, view);//当前没有被回收
 				return true;
 			}
 		} else {
@@ -174,14 +177,14 @@ public abstract class ViewAware implements ImageAware {
 	}
 
 	/**
-	 * Should set drawable into incoming view. Incoming view is guaranteed not null.<br />
-	 * This method is called on UI thread.
+	 * 必定调用在UI线程
+	 * 此时view必定不为null，此时可以尝试设置drawable
 	 */
 	protected abstract void setImageDrawableInto(Drawable drawable, View view);
 
 	/**
-	 * Should set Bitmap into incoming view. Incoming view is guaranteed not null.< br />
-	 * This method is called on UI thread.
+	 * 必定调用在UI线程
+	 * 此时view必定不为null，此时可以尝试设置bitmap
 	 */
 	protected abstract void setImageBitmapInto(Bitmap bitmap, View view);
 }

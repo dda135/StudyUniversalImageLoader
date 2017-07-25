@@ -29,11 +29,9 @@ import java.io.IOException;
 public interface ImageDecoder {
 
 	/**
-	 * Decodes image to {@link Bitmap} according target size and other parameters.
-	 *
-	 * @param imageDecodingInfo
-	 * @return
-	 * @throws IOException
+	 * 根据指定的目标大小和参数处理图片
+	 * @param imageDecodingInfo 处理的时候可能需要使用的参数
+	 * @return 处理后的bitmap
 	 */
 	Bitmap decode(ImageDecodingInfo imageDecodingInfo) throws IOException;
 }

@@ -50,47 +50,44 @@ import java.util.concurrent.Executor;
 public final class ImageLoaderConfiguration {
 
 	final Resources resources;
-	/** **/
-	//用于确定图片压缩后的最大宽高，默认可以认为是屏幕的宽高，可以通过Builder设置
+	//用于确定图片的最大宽高，可以自定义，默认是屏幕的宽高
+	//当加载图片的时候没办法从ImageAware中获取有效的宽高的时候会使用
 	final int maxImageWidthForMemoryCache;
 	final int maxImageHeightForMemoryCache;
-	/** **/
-	/** **/
 	//如果同时没有击中内存/硬盘缓存
 	//如果DisplayOptions中允许缓存在硬盘中，并且尝试从网络、文件等方式获取图片成功后
 	//缓存入硬盘的Bitmap的最大宽高
 	final int maxImageWidthForDiskCache;
 	final int maxImageHeightForDiskCache;
-	//在已经满足设置的最大宽高之后，在缓存到硬盘之前还可以对bitmap进行操作
+	//在已经满足maxImageWidthForDiskCache和maxImageHeightForDiskCache设置的图片缓存到硬盘中的最大宽高之后
+	//还可以在缓存到硬盘之前对bitmap进行额外操作
 	final BitmapProcessor processorForDiskCache;
-	/** **/
-	/** **/
 	//队列模式，LIFO表示后进先出，默认是先进先出（默认使用的是双向队列）
 	final QueueProcessingType tasksProcessingType;
+	//没有击中内存和硬盘缓存的时候，会通过该线程池尝试从网络等方向上加载并且处理图片
+	//基于threadPoolSize和threadPriority实现的一个fix线程池，也是Android常用的线程池
+	//有着固定的核心线程数和相同的最大线程数，并且队列长度无限
+	//即当线程池中执行线程数不足threadPoolSize的时候会新建线程执行，否则将任务放入队列中等待执行
 	final int threadPoolSize;
 	final int threadPriority;
-	//没有击中内存和硬盘缓存的时候，通过分配线程再次调用的实际执行线程池
-	//基于threadPoolSize和threadPriority实现的一个fix线程池，也是Android常用的线程池
-	//有着固定的核心线程数和相同的最大线程数，并且队列长度无限，即当线程池中执行线程数不足核心线程数的时候会新建线程
-	//任务过多则进入队列中排队
 	final Executor taskExecutor;
-	//1.击中内存缓存，直接用于处理bitmap和展示bitmap的线程池
-	//2.未击中内存缓存，但是击中硬盘缓存，通过分配线程再次调用的实际执行获取图片的线程池
+	//1.击中内存缓存，直接用于处理bitmap和展示bitmap的线程池，这个主要是处理自定义的postProcessor操作
+	//2.未击中内存缓存，但是击中硬盘缓存，会通过该线程池来获取图片并且进行处理，然后展示
 	//默认实现同taskExecutor
 	final Executor taskExecutorForCachedImages;
 	//当前taskExecutor是否使用了默认线程池
 	final boolean customExecutor;
 	//当前taskExecutorForCachedImages是否使用了默认线程池
 	final boolean customExecutorForCachedImages;
-	/** **/
-	/** **/
 	//内存缓存，允许自定义，默认是LruMemoryCache，size为JVM为当前进程分配的总内存量的1/8（如果在Application中开启了large_heap的话会更大）
 	final MemoryCache memoryCache;
 	//硬盘缓存，允许自定义，如果指定了最大的缓存大小或者缓存文件数目，默认是LruDiskCache，否则是UnlimitedDiskCache
 	final DiskCache diskCache;
-	/** **/
+	//默认的加载图片的下载器
 	final ImageDownloader downloader;
+	//用于对图片进行压缩拉伸等操作
 	final ImageDecoder decoder;
+	//默认的展示图片配置
 	final DisplayImageOptions defaultDisplayImageOptions;
 	//拒绝进行网络请求的下载器
 	final ImageDownloader networkDeniedDownloader;
@@ -208,7 +205,7 @@ public final class ImageLoaderConfiguration {
 
 		private MemoryCache memoryCache = null;
 		private DiskCache diskCache = null;
-		//硬盘缓存的时候将uri转码的操作者，默认是HashCode
+		//硬盘缓存的时候将uri转码的操作者，默认是HashCode的方式，常用的可能是MD5的编码模式
 		private FileNameGenerator diskCacheFileNameGenerator = null;
 		private ImageDownloader downloader = null;
 		private ImageDecoder decoder;

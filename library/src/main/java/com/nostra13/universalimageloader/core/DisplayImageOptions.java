@@ -217,7 +217,7 @@ public final class DisplayImageOptions {
 		//是否要缓存到硬盘当中
 		//这个参数会改变一下流程。
 		//先假设获取的是网络图片
-		//首先必须要没有集中内存缓存，然后尝试从硬盘缓存中获取失败
+		//首先必须要没有击中内存缓存，然后尝试从硬盘缓存中获取失败
 		//如果true，则会先从网络上加载图片，然后存入硬盘中，之后在从硬盘中读取获得bitmap
 		//false的话，直接从网络上读取获取bitmap
 		private boolean cacheOnDisk = false;
@@ -225,22 +225,23 @@ public final class DisplayImageOptions {
 		private ImageScaleType imageScaleType = ImageScaleType.IN_SAMPLE_POWER_OF_2;
 		private Options decodingOptions = new Options();
 		//击中内存缓存失败，然后进入加载任务通过线程沉睡的方式延迟加载
-		//在Android中如果作死的先使用isSyncLoading，然后在主线程中display，这种遇到了就踹他
 		private int delayBeforeLoading = 0;
 		//是否要考虑图片的方向参数，这种只有在file://类型以及文件是.jpeg的时候为true才有用
 		//比方说照完相系统返回的图片，其他时候是没有作用的
 		private boolean considerExifParams = false;
-		//目前没有作用
-		private Object extraForDownloader = null;
 		//内存缓存之前可以对bitmap进行操作
 		private BitmapProcessor preProcessor = null;
 		//击中内存缓存后可以对bitmap进行操作，和preProcessor是一对
 		private BitmapProcessor postProcessor = null;
 		//用于展示Bitmap，默认实现就setImageBitmap，主要是通过这个实现一些淡入浅出等效果
 		private BitmapDisplayer displayer = DefaultConfigurationFactory.createBitmapDisplayer();
+		//在当前请求isSyncLoading为false的前提下，可以指定LoadAndDisplayImageTask最终执行的线程
+		//一般在UI线程中使用的时候不需要设置，默认就是主线程Handler
 		private Handler handler = null;
-		//是否同步加载，也就是将加载图片和displayImage放在同一个线程中
+		//是否同步加载，也就是将加载图片和displayImage执行在同一个线程中
 		private boolean isSyncLoading = false;
+		//用于在通过ImageDownloader中通过uri获取图片的输入流的时候传递的一个参数
+		private Object extraForDownloader = null;
 
 		/**
 		 * Stub image will be displayed in {@link com.nostra13.universalimageloader.core.imageaware.ImageAware

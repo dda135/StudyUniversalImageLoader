@@ -30,19 +30,16 @@ import java.util.Locale;
  */
 public interface ImageDownloader {
 	/**
-	 * Retrieves {@link InputStream} of image by URI.
+	 * 从指定的URI中获取图片的输入流
 	 *
-	 * @param imageUri Image URI
-	 * @param extra    Auxiliary object which was passed to {@link DisplayImageOptions.Builder#extraForDownloader(Object)
-	 *                 DisplayImageOptions.extraForDownloader(Object)}; can be null
-	 * @return {@link InputStream} of image
-	 * @throws IOException                   if some I/O error occurs during getting image stream
-	 * @throws UnsupportedOperationException if image URI has unsupported scheme(protocol)
+	 * @param imageUri 图片的URI
+	 * @param extra 在DisplayImageOptions中通过extraForDownloader指定的参数
+	 * @return 图片的输入流
 	 */
 	InputStream getStream(String imageUri, Object extra) throws IOException;
 
-	/** Represents supported schemes(protocols) of URI. Provides convenient methods for work with schemes and URIs.
-	 * 当前支持解析的URI的schemes
+	/**
+	 * ImageLoader当前支持解析的URI的schemes
 	 * */
 	public enum Scheme {
 		HTTP("http"), HTTPS("https"), FILE("file"), CONTENT("content"), ASSETS("assets"), DRAWABLE("drawable"), UNKNOWN("");

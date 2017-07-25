@@ -92,7 +92,7 @@ public class BaseImageDownloader implements ImageDownloader {
 				//文件，主要用于硬盘缓存，当然也可以自己写文件路径
 				return getStreamFromFile(imageUri, extra);
 			case CONTENT:
-				//内容提供者，当然就包括一些文件
+				//内容提供者，当然就包括一些文件，里面主要是视频的缩略图、联系人的头像等，当然主要是照相和选择图片的uri
 				return getStreamFromContent(imageUri, extra);
 			case ASSETS:
 				//assets中的资源
@@ -108,14 +108,7 @@ public class BaseImageDownloader implements ImageDownloader {
 	}
 
 	/**
-	 * Retrieves {@link InputStream} of image by URI (image is located in the network).
 	 * 从网络上获取对应输入流
-	 * @param imageUri Image URI
-	 * @param extra    Auxiliary object which was passed to {@link DisplayImageOptions.Builder#extraForDownloader(Object)
-	 *                 DisplayImageOptions.extraForDownloader(Object)}; can be null
-	 * @return {@link InputStream} of image
-	 * @throws IOException if some I/O error occurs during network request or if no InputStream could be created for
-	 *                     URL.
 	 */
 	protected InputStream getStreamFromNetwork(String imageUri, Object extra) throws IOException {
 		HttpURLConnection conn = createConnection(imageUri, extra);
@@ -148,30 +141,20 @@ public class BaseImageDownloader implements ImageDownloader {
 	}
 
 	/**
-	 * HttpURLConnection返回200状态码才认为成功
-	 * @param conn Opened request connection (response code is available)
-	 * @return <b>true</b> - if data from connection is correct and should be read and processed;
-	 *         <b>false</b> - if response contains irrelevant data and shouldn't be processed
-	 * @throws IOException
+	 * HttpURLConnection返回200状态码才认为本次网络连接成功
 	 */
 	protected boolean shouldBeProcessed(HttpURLConnection conn) throws IOException {
 		return conn.getResponseCode() == 200;
 	}
 
 	/**
-	 * Create {@linkplain HttpURLConnection HTTP connection} for incoming URL
-	 * 创建指定的HttpURLConnetion
-	 * @param url   URL to connect to
-	 * @param extra Auxiliary object which was passed to {@link DisplayImageOptions.Builder#extraForDownloader(Object)
-	 *              DisplayImageOptions.extraForDownloader(Object)}; can be null
-	 * @return {@linkplain HttpURLConnection Connection} for incoming URL. Connection isn't established so it still configurable.
-	 * @throws IOException if some I/O error occurs during network request or if no InputStream could be created for
-	 *                     URL.
+	 * 根据指定的http协议的url创建指定的HttpURLConnetion
 	 */
 	protected HttpURLConnection createConnection(String url, Object extra) throws IOException {
 		//这里对链接进行了encode操作，当中指定了一些需要避免encode的字符
 		String encodedUrl = Uri.encode(url, ALLOWED_URI_CHARS);
 		HttpURLConnection conn = (HttpURLConnection) new URL(encodedUrl).openConnection();
+		//默认连接超时5s，读取图片输入流超时20s
 		conn.setConnectTimeout(connectTimeout);
 		conn.setReadTimeout(readTimeout);
 		return conn;
@@ -179,19 +162,12 @@ public class BaseImageDownloader implements ImageDownloader {
 
 	/**
 	 * 返回来源于文件的图片的输入流
-	 * Retrieves {@link InputStream} of image by URI (image is located on the local file system or SD card).
-	 *
-	 * @param imageUri Image URI
-	 * @param extra    Auxiliary object which was passed to {@link DisplayImageOptions.Builder#extraForDownloader(Object)
-	 *                 DisplayImageOptions.extraForDownloader(Object)}; can be null
-	 * @return {@link InputStream} of image
-	 * @throws IOException if some I/O error occurs reading from file system
 	 */
 	protected InputStream getStreamFromFile(String imageUri, Object extra) throws IOException {
 		//获取文件的绝对路径（不包含Scheme）
 		String filePath = Scheme.FILE.crop(imageUri);
 		if (isVideoFileUri(imageUri)) {
-			//如果是video类型文件，获取其缩略图
+			//如果是video类型文件,尝试通过video文件创建一个缩略图
 			return getVideoThumbnailStream(filePath);
 		} else {//普通的文件
 			BufferedInputStream imageStream = new BufferedInputStream(new FileInputStream(filePath), BUFFER_SIZE);
@@ -199,10 +175,13 @@ public class BaseImageDownloader implements ImageDownloader {
 		}
 	}
 
+	/**
+	 * 根据video文件路径生成缩略图，并且获得缩略图的输入流
+	 */
 	@TargetApi(Build.VERSION_CODES.FROYO)
 	private InputStream getVideoThumbnailStream(String filePath) {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.FROYO) {
-			//获取缩略图
+			//创建缩略图
 			Bitmap bitmap = ThumbnailUtils
 					.createVideoThumbnail(filePath, MediaStore.Images.Thumbnails.FULL_SCREEN_KIND);
 			if (bitmap != null) {
@@ -217,19 +196,12 @@ public class BaseImageDownloader implements ImageDownloader {
 
 	/**
 	 * 通过内容提供者的uri形式获取图片的输入流
-	 * Retrieves {@link InputStream} of image by URI (image is accessed using {@link ContentResolver}).
-	 *
-	 * @param imageUri Image URI
-	 * @param extra    Auxiliary object which was passed to {@link DisplayImageOptions.Builder#extraForDownloader(Object)
-	 *                 DisplayImageOptions.extraForDownloader(Object)}; can be null
-	 * @return {@link InputStream} of image
-	 * @throws FileNotFoundException if the provided URI could not be opened
 	 */
 	protected InputStream getStreamFromContent(String imageUri, Object extra) throws FileNotFoundException {
 		ContentResolver res = context.getContentResolver();
 
 		Uri uri = Uri.parse(imageUri);
-		if (isVideoContentUri(uri)) { // video thumbnail
+		if (isVideoContentUri(uri)) {//当前uri为video类型
 			//video类型只获取对应缩略图
 			Long origId = Long.valueOf(uri.getLastPathSegment());
 			Bitmap bitmap = MediaStore.Video.Thumbnails
@@ -239,14 +211,18 @@ public class BaseImageDownloader implements ImageDownloader {
 				bitmap.compress(CompressFormat.PNG, 0, bos);
 				return new ByteArrayInputStream(bos.toByteArray());
 			}
-		} else if (imageUri.startsWith(CONTENT_CONTACTS_URI_PREFIX)) { // contacts photo
+		} else if (imageUri.startsWith(CONTENT_CONTACTS_URI_PREFIX)) {
 			//如果uri是联系人类型，返回联系人的头像
 			return getContactPhotoStream(uri);
 		}
 		//对于一般的图片来说，直接通过ContentResolver和Uri打开输入流即可
+		//比方说系统的选择图片之类的
 		return res.openInputStream(uri);
 	}
 
+	/**
+	 * 通过制定URI获取联系人头像的输入流
+	 */
 	@TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
 	protected InputStream getContactPhotoStream(Uri uri) {
 		ContentResolver res = context.getContentResolver();
@@ -258,13 +234,7 @@ public class BaseImageDownloader implements ImageDownloader {
 	}
 
 	/**
-	 * Retrieves {@link InputStream} of image by URI (image is located in assets of application).
-	 *
-	 * @param imageUri Image URI
-	 * @param extra    Auxiliary object which was passed to {@link DisplayImageOptions.Builder#extraForDownloader(Object)
-	 *                 DisplayImageOptions.extraForDownloader(Object)}; can be null
-	 * @return {@link InputStream} of image
-	 * @throws IOException if some I/O error occurs file reading
+	 * 从assets中读取文件的输入流
 	 */
 	protected InputStream getStreamFromAssets(String imageUri, Object extra) throws IOException {
 		String filePath = Scheme.ASSETS.crop(imageUri);
@@ -273,12 +243,7 @@ public class BaseImageDownloader implements ImageDownloader {
 	}
 
 	/**
-	 * Retrieves {@link InputStream} of image by URI (image is located in drawable resources of application).
-	 *
-	 * @param imageUri Image URI
-	 * @param extra    Auxiliary object which was passed to {@link DisplayImageOptions.Builder#extraForDownloader(Object)
-	 *                 DisplayImageOptions.extraForDownloader(Object)}; can be null
-	 * @return {@link InputStream} of image
+	 * 通过drawable://123123这种类型的uri获取资源文件的输入流
 	 */
 	protected InputStream getStreamFromDrawable(String imageUri, Object extra) {
 		//这里要求的是drawable://123123，其中12313应该是资源id，通过R.drawable.icon获取
